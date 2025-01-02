@@ -13,6 +13,10 @@
 
 constexpr const char* TAG = "main";
 
+extern const uint8_t image_bg_start[] asm("_binary_m5_png_start");
+extern const uint8_t image_bg_end[] asm("_binary_m5_png_end");
+
+
 #ifdef CONFIG_ENABLE_HEAP_MONITOR
 static esp_timer_handle_t s_monitor_timer;
 #endif // CONFIG_ENABLE_HEAP_MONITOR
@@ -46,6 +50,11 @@ extern "C" void app_main(void) {
   cfg.internal_spk = false;
   cfg.internal_mic = false;
   M5.begin(cfg);
+
+  M5.Lcd.fillScreen(TFT_WHITE);
+  printf("image_bg_start: %p, image_bg_end %p\n", image_bg_start, image_bg_end);
+  bool res = M5.Lcd.drawPng(image_bg_start, image_bg_end - image_bg_start, 0, 0, 320, 240);
+  printf("drawPng: %d\n", res);
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   peer_init();

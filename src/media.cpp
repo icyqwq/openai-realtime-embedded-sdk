@@ -9,6 +9,9 @@
 #include <cstdint>
 #include <vector>
 #include <sys/socket.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 
 #define OPUS_OUT_BUFFER_SIZE 1276  // 1276 bytes is recommended by opus_encode
 #define SAMPLE_RATE 8000
@@ -25,6 +28,20 @@
 
 constexpr const char *TAG = "media";
 
+static LGFX_Sprite canvas_openai(&M5.Lcd);
+static LGFX_Sprite canvas_m5(&M5.Lcd);
+
+enum {
+  POS_CANVAS_OPENAI_X = 94,
+  POS_CANVAS_OPENAI_Y = 10,
+  POS_CANVAS_M5_X = 94,
+  POS_CANVAS_M5_Y = 127,
+  CANVAS_W = 215,
+  CANVAS_H = 100,
+  RMS_SAMPLES = 43,
+  RMS_SAMPLES_END = 42,
+};
+
 // UDP socket for audio data debugging
 #ifdef CONFIG_MEDIA_ENABLE_DEBUG_AUDIO_UDP_CLIENT
 static struct sockaddr_in s_debug_audio_in_dest_addr;
@@ -32,10 +49,11 @@ static struct sockaddr_in s_debug_audio_out_dest_addr;
 static ssize_t s_debug_audio_sock;
 #endif // CONFIG_MEDIA_ENABLE_DEBUG_AUDIO_UDP_CLIENT
 
-// Initialization of AW88298 and ES7210 from M5Unified implementation.
+// 初始化 AW88298 和 ES7210
 constexpr std::uint8_t aw88298_i2c_addr = 0x36;
 constexpr std::uint8_t es7210_i2c_addr = 0x40;
 constexpr std::uint8_t aw9523_i2c_addr = 0x58;
+
 static void aw88298_write_reg(std::uint8_t reg, std::uint16_t value)
 {
   value = __builtin_bswap16(value);
@@ -54,8 +72,8 @@ static void initialize_speaker_cores3()
   aw88298_write_reg( 0x61, 0x0673 );  // boost mode disabled 
   aw88298_write_reg( 0x04, 0x4040 );  // I2SEN=1 AMPPD=0 PWDN=0
   aw88298_write_reg( 0x05, 0x0008 );  // RMSE=0 HAGCE=0 HDCCE=0 HMUTE=0
-  aw88298_write_reg( 0x06, 0x14C0 );  // INPLEV=0 (not attenuated), I2SRXEN=1 (enable), CHSEL=01 (left), I2SMD=00 (Philips Standard I2S), I2SFS=00 (16bit), I2SBCK=00 (32*fs), I2SSR=0000 (8kHz)
-  aw88298_write_reg( 0x0C, 0x0064 );  // volume setting (full volume)
+  aw88298_write_reg( 0x06, 0x14C0 );  // 配置 I2S
+  aw88298_write_reg( 0x0C, 0x0064 );  // 音量设置（最大）
 }
 
 static void initialize_microphone_cores3()
@@ -105,14 +123,73 @@ static void initialize_microphone_cores3()
   }
 }
 
+typedef struct {
+  float rms_record[RMS_SAMPLES];
+  int pos_x;
+  int pos_y;
+} ui_t;
+
+ui_t ui_m5 = {
+  .rms_record = {0},
+  .pos_x = POS_CANVAS_M5_X,
+  .pos_y = POS_CANVAS_M5_Y,
+};
+
+ui_t ui_openai = {
+  .rms_record = {0},
+  .pos_x = POS_CANVAS_OPENAI_X,
+  .pos_y = POS_CANVAS_OPENAI_Y,
+};
+
+// 定义 UI 更新结构体
+struct UIUpdate {
+    opus_int16 samples[BUFFER_SAMPLES];
+    int len;
+    LGFX_Sprite *canvas;
+    ui_t *ui;
+};
+
+void update_chart(int16_t *samples, int len, LGFX_Sprite& canvas, ui_t &ui);
+
+// 声明队列句柄
+static QueueHandle_t ui_update_queue = NULL;
+
+// UI 任务
+static void uitask(void *pvParameters)
+{
+    UIUpdate update;
+    while (true)
+    {
+        if (xQueueReceive(ui_update_queue, &update, portMAX_DELAY) == pdPASS)
+        {
+            update_chart(update.samples, update.len, *(update.canvas), *(update.ui));
+        }
+    }
+}
+
 void oai_init_audio_capture() {
   ESP_LOGI(TAG, "Initializing microphone");
   initialize_microphone_cores3();
   ESP_LOGI(TAG, "Initializing speaker");
   initialize_speaker_cores3();
 
+  canvas_openai.setColorDepth(16);
+  canvas_openai.setPsram(true);  
+  canvas_openai.createSprite(215, 100);
+  canvas_openai.fillSprite(TFT_WHITE);
+  canvas_openai.pushSprite(POS_CANVAS_OPENAI_X, POS_CANVAS_OPENAI_Y);
+
+  canvas_m5.setColorDepth(16);
+  canvas_m5.setPsram(true);
+  canvas_m5.createSprite(215, 100);
+  canvas_m5.fillSprite(TFT_WHITE);
+  canvas_m5.pushSprite(POS_CANVAS_M5_X, POS_CANVAS_M5_Y);
+
+  memset(ui_m5.rms_record, 0, sizeof(ui_m5.rms_record));
+  memset(ui_openai.rms_record, 0, sizeof(ui_openai.rms_record));
+
 #ifdef CONFIG_MEDIA_ENABLE_DEBUG_AUDIO_UDP_CLIENT
-  // Initialize UDP socket for debug.
+  // 初始化 UDP 套接字用于调试
   s_debug_audio_sock = socket(AF_INET, SOCK_DGRAM, 0);
   if (s_debug_audio_sock < 0) {
     ESP_LOGE(TAG, "Failed to create socket");
@@ -157,6 +234,62 @@ void oai_init_audio_capture() {
     return;
   }
   i2s_zero_dma_buffer(I2S_NUM_0);
+
+  // 初始化 UI 更新队列
+  ui_update_queue = xQueueCreate(10, sizeof(UIUpdate));
+  if (ui_update_queue == NULL) {
+    ESP_LOGE(TAG, "Failed to create UI update queue");
+    return;
+  }
+
+  xTaskCreatePinnedToCore(uitask, "uitask", 8192, NULL, 5, NULL, 1);
+}
+
+float get_rms(int16_t *samples, int len)
+{
+  float sum = 0;
+  for (int i = 0; i < len; i++)
+  {
+    sum += samples[i] * samples[i];
+  }
+  return sqrt(sum / len);
+}
+
+void update_chart(int16_t *samples, int len, LGFX_Sprite& canvas, ui_t &ui)
+{
+  memmove(ui.rms_record, ui.rms_record + 1, (RMS_SAMPLES_END) * sizeof(float));
+  float rms = get_rms(samples, len);
+  if (rms < 10) {
+    rms = 0;
+  }
+  ui.rms_record[RMS_SAMPLES_END] = rms;
+  canvas.fillSprite(TFT_WHITE);
+  float max_rms = 0;
+  float avg_rms = 0;
+  
+  for (int i = 0; i < RMS_SAMPLES; i++)
+  {
+    if (ui.rms_record[i] > max_rms)
+    {
+      max_rms = ui.rms_record[i];
+    }
+    avg_rms += ui.rms_record[i];
+  }
+  avg_rms /= RMS_SAMPLES;
+  if (max_rms < 100) {
+    max_rms = 100;
+  }
+
+  for (int i = 0; i < RMS_SAMPLES; i++) {
+    int h = (int)(50 * (ui.rms_record[i] / max_rms));
+    if (h < 1) {
+      h = 1;
+    }
+    int x = i * 5;
+    canvas.fillRect(x, 50 - h, 5, h * 2, TFT_BLACK);
+  }
+  
+  canvas.pushSprite(ui.pos_x, ui.pos_y);
 }
 
 opus_int16 *output_buffer = NULL;
@@ -178,6 +311,16 @@ void oai_audio_decode(uint8_t *data, size_t size) {
       opus_decode(opus_decoder, data, size, output_buffer, BUFFER_SAMPLES, 0);
 
   if (decoded_size > 0) {
+    // 准备 OpenAI 画布的 UI 更新
+    UIUpdate update_openai;
+    memcpy(update_openai.samples, output_buffer, decoded_size * sizeof(opus_int16));
+    update_openai.len = decoded_size;
+    update_openai.canvas = &canvas_openai;
+    update_openai.ui = &ui_openai;
+    if (xQueueSend(ui_update_queue, &update_openai, portMAX_DELAY) != pdPASS) {
+      ESP_LOGE(TAG, "Failed to send OpenAI UI update to queue");
+    }
+
     std::size_t bytes_written = 0;
     if( esp_err_t err = i2s_write(I2S_NUM_0, output_buffer, decoded_size * sizeof(opus_int16),
               &bytes_written, portMAX_DELAY); err != ESP_OK ) {
@@ -220,6 +363,17 @@ void oai_send_audio(PeerConnection *peer_connection) {
   if( esp_err_t err = i2s_read(I2S_NUM_0, encoder_input_buffer, BUFFER_SAMPLES*sizeof(opus_int16), &bytes_read,
            portMAX_DELAY) ; err != ESP_OK ) {
     ESP_LOGE(TAG, "Failed to read audio data from I2S: %s", esp_err_to_name(err));
+  }
+  int samples_read = bytes_read / sizeof(opus_int16);
+  
+  // 准备 M5 画布的 UI 更新
+  UIUpdate update_m5;
+  memcpy(update_m5.samples, encoder_input_buffer, samples_read * sizeof(opus_int16));
+  update_m5.len = samples_read;
+  update_m5.canvas = &canvas_m5;
+  update_m5.ui = &ui_m5;
+  if (xQueueSend(ui_update_queue, &update_m5, portMAX_DELAY) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to send M5 UI update to queue");
   }
 
 #ifdef CONFIG_MEDIA_ENABLE_DEBUG_AUDIO_UDP_CLIENT
