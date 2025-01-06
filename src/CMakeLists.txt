@@ -23,3 +23,6 @@ target_compile_options(${lib} PRIVATE -Wno-error=incompatible-pointer-types)
 idf_component_get_property(lib esp-libopus COMPONENT_LIB)
 target_compile_options(${lib} PRIVATE -Wno-error=maybe-uninitialized)
 target_compile_options(${lib} PRIVATE -Wno-error=stringop-overread)
+
+set(nvs_data ${CMAKE_BINARY_DIR}/nvs_data.bin)
+esptool_py_flash_to_partition(flash "nvs" "${nvs_data}")

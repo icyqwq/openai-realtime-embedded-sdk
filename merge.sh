@@ -1,0 +1,1 @@
+esptool.py --chip esp32s3 merge_bin -o build/openai_demo_firmware.bin --flash_size 4MB --flash_freq 80m 0x0 build/bootloader/bootloader.bin 0x10000 build/src.bin 0x8000 build/partition_table/partition-table.bin

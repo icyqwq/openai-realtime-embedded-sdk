@@ -10,6 +10,9 @@
 
 static bool g_wifi_connected = false;
 
+extern char wifi_ssid[64];
+extern char wifi_password[64];
+
 static void oai_event_handler(void *arg, esp_event_base_t event_base,
                               int32_t event_id, void *event_data) {
   static int s_retry_num = 0;
@@ -42,12 +45,12 @@ void oai_wifi(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(LOG_TAG, "Connecting to WiFi SSID: %s", WIFI_SSID);
+  ESP_LOGI(LOG_TAG, "Connecting to WiFi SSID: %s", wifi_ssid);
   wifi_config_t wifi_config;
   memset(&wifi_config, 0, sizeof(wifi_config));
-  strncpy((char *)wifi_config.sta.ssid, (char *)WIFI_SSID,
+  strncpy((char *)wifi_config.sta.ssid, (char *)wifi_ssid,
           sizeof(wifi_config.sta.ssid));
-  strncpy((char *)wifi_config.sta.password, (char *)WIFI_PASSWORD,
+  strncpy((char *)wifi_config.sta.password, (char *)wifi_password,
           sizeof(wifi_config.sta.password));
 
   ESP_ERROR_CHECK(esp_wifi_set_config(

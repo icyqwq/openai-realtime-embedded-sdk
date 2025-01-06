@@ -16,10 +16,56 @@ constexpr const char* TAG = "main";
 extern const uint8_t image_bg_start[] asm("_binary_m5_png_start");
 extern const uint8_t image_bg_end[] asm("_binary_m5_png_end");
 
+char wifi_ssid[64];
+char wifi_password[64];
+char openaikey[128];
 
 #ifdef CONFIG_ENABLE_HEAP_MONITOR
 static esp_timer_handle_t s_monitor_timer;
 #endif // CONFIG_ENABLE_HEAP_MONITOR
+
+bool load_user_data()
+{
+  nvs_handle_t nvs_handle;
+    esp_err_t ret;
+
+    ret = nvs_open("config", NVS_READONLY, &nvs_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE("NVS", "Error opening NVS handle: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    size_t required_size = sizeof(wifi_ssid);
+    ret = nvs_get_str(nvs_handle, "wifi_ssid", wifi_ssid, &required_size);
+    if (ret == ESP_OK) {
+        ESP_LOGI("NVS", "WiFi SSID: %s", wifi_ssid);
+    } else {
+        ESP_LOGE("NVS", "Error reading WiFi SSID: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    required_size = sizeof(wifi_password);
+    ret = nvs_get_str(nvs_handle, "wifi_password", wifi_password, &required_size);
+    if (ret == ESP_OK) {
+        ESP_LOGI("NVS", "WiFi Password: %s", wifi_password);
+    } else {
+        ESP_LOGE("NVS", "Error reading WiFi Password: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    required_size = sizeof(openaikey);
+    ret = nvs_get_str(nvs_handle, "openaikey", openaikey, &required_size);
+    if (ret == ESP_OK) {
+        ESP_LOGI("NVS", "OpenAI Key: %s", openaikey);
+    } else {
+        ESP_LOGE("NVS", "Error reading OpenAI Key: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    nvs_close(nvs_handle);
+
+    return true;
+}
 
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
@@ -29,6 +75,7 @@ extern "C" void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+
 
 #ifdef CONFIG_ENABLE_HEAP_MONITOR
   esp_timer_create_args_t timer_args = {
@@ -52,9 +99,15 @@ extern "C" void app_main(void) {
   M5.begin(cfg);
 
   M5.Lcd.fillScreen(TFT_WHITE);
-  printf("image_bg_start: %p, image_bg_end %p\n", image_bg_start, image_bg_end);
+
+  if (!load_user_data()) {
+    M5.Lcd.fillScreen(TFT_RED);
+    M5.Lcd.drawString("Failed to load config data", 0, 0);
+    ESP_LOGE(TAG, "Failed to load user data");
+    return;
+  }
+
   bool res = M5.Lcd.drawPng(image_bg_start, image_bg_end - image_bg_start, 0, 0, 320, 240);
-  printf("drawPng: %d\n", res);
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   peer_init();

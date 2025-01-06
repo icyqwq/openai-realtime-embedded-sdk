@@ -1,0 +1,1 @@
+python -m esp_idf_nvs_partition_gen generate nvs_data.csv build/nvs_data.bin 0x6000
