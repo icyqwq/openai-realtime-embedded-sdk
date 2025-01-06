@@ -18,7 +18,7 @@ extern const uint8_t image_bg_end[] asm("_binary_m5_png_end");
 
 char wifi_ssid[64];
 char wifi_password[64];
-char openaikey[128];
+char openaikey[512];
 
 #ifdef CONFIG_ENABLE_HEAP_MONITOR
 static esp_timer_handle_t s_monitor_timer;
